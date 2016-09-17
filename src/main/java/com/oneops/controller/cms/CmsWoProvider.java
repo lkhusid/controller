@@ -473,7 +473,7 @@ public class CmsWoProvider {
 		List<CmsCIRelation> complianceRelations = getComplianceRelations(ao);
 		List<CmsCI> list = complianceRelations.stream()
 			.map(complianceRel -> complianceRel.getToCi())
-			.filter(complianceCi -> (isComplianceEnabled(complianceCi)) && expressionEvaluator.isExpressionMatching(complianceCi, ao))
+			.filter(complianceCi -> expressionEvaluator.isExpressionMatching(complianceCi, ao))
 			.collect(Collectors.toList());
 
 		return list;
@@ -681,7 +681,9 @@ public class CmsWoProvider {
 		for (CmsCIRelation rel : monitorList) {
 			cmsUtil.processAllVars(rel.getToCi(), cloudVars, globalVars, localVars);
 			CmsRfcCI monitor = rfcUtil.mergeRfcAndCi(null, rel.getToCi(), "dj");
-			monitors.add(monitor);
+			if (!CmsConstants.CI_STATE_PENDING_DELETION.equals(monitor.getCiState())) {
+				monitors.add(monitor);
+			}
 		}
 		return monitors;
 	}
