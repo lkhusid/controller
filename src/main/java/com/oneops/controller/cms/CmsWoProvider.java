@@ -46,7 +46,6 @@ import com.oneops.cms.util.CmsConstants;
 import com.oneops.cms.util.CmsError;
 import com.oneops.cms.util.CmsUtil;
 import com.oneops.cms.util.domain.AttrQueryCondition;
-import com.oneops.es.offerings.percolator.OfferingsMatcher;
 
 import org.apache.log4j.Logger;
 
@@ -54,6 +53,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -86,6 +86,8 @@ public class CmsWoProvider {
 	private static final String SERVICED_BY_PAYLOAD_NAME = "ServicedBy";
 	private static final String REQUIRES_COMPUTES_PAYLOAD_NAME = "RequiresComputes";
 	private static final String OFFERING = "offerings";
+	private static final String IS_PLATFORM_ENABLED_ATTR = "is_platform_enabled";
+	private static final String IS_PLATFORM_ENABLED_REL_ATTR = "enabled";
 	private static final String EXTRA_RUNLIST_PAYLOAD_NAME = "ExtraRunList";
 	private static final boolean OFFERING_ENABLED = "true".equals(System.getProperty("controller.offerings.on", "true"));
 	/**
@@ -195,7 +197,7 @@ public class CmsWoProvider {
         		continue;
         	}
         	if (env == null) {
-        		env = getEnv(ao.getCiId());
+        		env = getEnvAndPopulatePlatEnable(ao.getBox());
         		envs = new ArrayList<CmsCI>();
         		envs.add(env);
         	};
@@ -300,7 +302,7 @@ public class CmsWoProvider {
 		
         Map<Long, CmsCI> manifestToTemplateMap = new HashMap<Long, CmsCI>();
 		
-        CmsCI env = getEnv(workOrder.getRfcCi().getCiId());
+        CmsCI env = getEnvAndPopulatePlatEnable(workOrder.getBox());
 
         Map<String, String> globalVars = cmsUtil.getGlobalVars(env);
 		Map<String, String> cloudVars = cmsUtil.getCloudVars(workOrder.getCloud());
@@ -400,54 +402,38 @@ public class CmsWoProvider {
 
 		return workOrder;
 	}
-	
-	
+
+
+
 	private List<CmsRfcCI> getRequiredOfferings(CmsWorkOrder workOrder) {
-		
+
 		List<CmsRfcCI> reqOfferings = new ArrayList<CmsRfcCI>();
 		if (OFFERING_ENABLED) {
 			for(Entry<String, Map<String, CmsCI>> serviceEntry : workOrder.getServices().entrySet()){
-	           for(CmsCI serviceCI:serviceEntry.getValue().values()){
-	        	   String offeringNS = serviceCI.getNsPath()+"/"+serviceCI.getCiClassName()+"/"+serviceCI.getCiName();
-	        	   if(cmProcessor.getCountFromCIRelationsByNS(serviceCI.getCiId(), "base.Offers", null, null, offeringNS, false) > 0){
-	        		  List<String> offeringIds = offeringMatcher.getEligbleOfferings(cmsUtil.custRfcCI2RfcCISimple(workOrder.getRfcCi()), offeringNS);
-	        		  if(!offeringIds.isEmpty()){
-	      				CmsRfcCI offeringRfc = rfcUtil.mergeRfcAndCi(null,getLowestCostOffering(offeringIds) ,"df");
-	      				CmsRfcAttribute serviceTypeAttr = new CmsRfcAttribute();
-	        			serviceTypeAttr.setAttributeName("service_type");
-	        			serviceTypeAttr.setNewValue(serviceEntry.getKey());
-	        			offeringRfc.addAttribute(serviceTypeAttr);
-	      				reqOfferings.add(offeringRfc);
-	      			}
-	        	   }
-	           }
+				for(CmsCI serviceCI:serviceEntry.getValue().values()){
+					String offeringNS = serviceCI.getNsPath()+"/"+serviceCI.getCiClassName()+"/"+serviceCI.getCiName();
+					List<CmsCI> offerings = offeringMatcher.getEligbleOfferings(cmsUtil.custRfcCI2RfcCISimple(workOrder.getRfcCi()), offeringNS);
+					if (!offerings.isEmpty()) {
+						CmsRfcCI offeringRfc = rfcUtil.mergeRfcAndCi(null, getLowestCostOffering(offerings), "df");
+						CmsRfcAttribute serviceTypeAttr = new CmsRfcAttribute();
+						serviceTypeAttr.setAttributeName("service_type");
+						serviceTypeAttr.setNewValue(serviceEntry.getKey());
+						offeringRfc.addAttribute(serviceTypeAttr);
+						reqOfferings.add(offeringRfc);
+					}
+				}
 			}
 		}
 		return reqOfferings;
 	}
 
-	private CmsCI getLowestCostOffering(List<String> offeringIds) {
-		
-		if(offeringIds.size() == 1){
-			return cmProcessor.getCiById(Long.valueOf(offeringIds.get(0)));
-		}
-		
+	private CmsCI getLowestCostOffering(List<CmsCI> offerings) {
 		CmsCI lowestOffering = null;
-		for(String offId:offeringIds){
-			CmsCI offering = cmProcessor.getCiById(Long.valueOf(offId));
-			if (offering != null) {
-				if(lowestOffering == null){
-					lowestOffering = offering;
-					continue;
-				}else{
-					Double costValue = Double.valueOf(offering.getAttribute("cost_rate").getDfValue());
-					if(costValue < Double.valueOf(lowestOffering.getAttribute("cost_rate").getDfValue())){
-						lowestOffering = offering;
-					}
-				}
-			}
-			else {
-				logger.warn("offering not found, offId : " + offId);
+		for (CmsCI offering : offerings) {
+			if (lowestOffering == null) {
+				lowestOffering = offering;
+			} else if (Double.valueOf(offering.getAttribute("cost_rate").getDfValue()) < Double.valueOf(lowestOffering.getAttribute("cost_rate").getDfValue())) {
+				lowestOffering = offering;
 			}
 		}
 		return lowestOffering;
@@ -561,6 +547,7 @@ public class CmsWoProvider {
 		
 		Map<String,Map<String, CmsCI>> services = new HashMap<String,Map<String, CmsCI>>();
 		List<CmsRfcRelation> realizedAsRels = cmrfcProcessor.getToCIRelationsNaked(ciId, "base.RealizedAs", null, null);
+		List<CmsCI> zones = cmProcessor.getCiBy3NsLike(getCloudNsPath(cloud), CmsConstants.ZONE_CLASS, null);
 		
 		if (realizedAsRels.size()>0) {
 			CmsRfcRelation realizedRel = realizedAsRels.get(0);
@@ -584,14 +571,16 @@ public class CmsWoProvider {
 						attrCondition.setAvalue(requredService);
 						attrCondition.setCondition("eq");
 						attrsQuery.add(attrCondition);
-						List<CmsCIRelation> cloudServiceRels =  cmProcessor.getFromCIRelationsByAttrs(cloud.getCiId(), "base.Provides", null, null, attrsQuery );
-						if (cloudServiceRels.size()>0) {
-							CmsCI cloudService = cloudServiceRels.get(0).getToCi();
-							if (!services.containsKey(requredService)) {
-								services.put(requredService, new HashMap<String, CmsCI>());
-							}
-							services.get(requredService).put(cloud.getCiName(), cloudService);
-						}
+
+						//get cloud level service
+                        List<CmsCIRelation> cloudServiceRels = getServiceRelations(cloud, attrsQuery);
+                        addToServices(services, requredService, cloud.getCiName(), cloudServiceRels);
+
+                        //get zone level service
+                        for (CmsCI zone : zones) {
+                        	List<CmsCIRelation> zoneServiceRels = getServiceRelations(zone, attrsQuery);
+                        	addToServices(services, requredService, cloud.getCiName() + "/" + zone.getCiName(), zoneServiceRels);
+                        }
 					}
 				}
 			} else {
@@ -606,8 +595,25 @@ public class CmsWoProvider {
 		return services;
 	}
 	
+	private String getCloudNsPath(CmsCI cloud) {
+        return cloud.getNsPath() + "/" + cloud.getCiName();
+	}
+
+	private List<CmsCIRelation> getServiceRelations(CmsCI ci, List<AttrQueryCondition> attrsQuery) {
+		List<CmsCIRelation> serviceRels =  cmProcessor.getFromCIRelationsByAttrs(ci.getCiId(), CmsConstants.BASE_PROVIDES, null, null, attrsQuery );
+		return serviceRels;
+	}
 	
-	
+	private void addToServices(Map<String,Map<String, CmsCI>> services, String requredService, String ciName, List<CmsCIRelation> serviceRels) {
+		if (serviceRels.size()>0) {
+			CmsCI serviceCi = serviceRels.get(0).getToCi();
+			if (!services.containsKey(requredService)) {
+				services.put(requredService, new LinkedHashMap<String, CmsCI>());
+			}
+			services.get(requredService).put(ciName, serviceCi);
+		}
+	}
+
 	private CmsCI getBox(long ciId) {
 		
 		CmsCI box = null;
@@ -747,12 +753,19 @@ public class CmsWoProvider {
 		return keys;
 	}
 
-	private CmsCI getEnv(long ciId) {
-		CmsCI box = getBox(ciId);
+	private CmsCI getEnvAndPopulatePlatEnable(CmsCI box) {
 		if (box != null) {
 			List<CmsCIRelation> envRels = cmProcessor.getToCIRelations(box.getCiId(), "manifest.ComposedOf", "manifest.Environment");
 			if (envRels.size() >0) {
-				return envRels.get(0).getFromCi(); 
+				CmsCIRelation composedOf = envRels.get(0); 
+				if (composedOf.getAttribute(IS_PLATFORM_ENABLED_REL_ATTR) != null) {
+					CmsCIAttribute platEnabledAttr = new CmsCIAttribute();
+					platEnabledAttr.setAttributeName(IS_PLATFORM_ENABLED_ATTR);
+					platEnabledAttr.setDfValue(composedOf.getAttribute(IS_PLATFORM_ENABLED_REL_ATTR).getDfValue());
+					platEnabledAttr.setDjValue(composedOf.getAttribute(IS_PLATFORM_ENABLED_REL_ATTR).getDfValue());
+					box.addAttribute(platEnabledAttr);
+				}
+				return composedOf.getFromCi(); 
 			}
 		}
 		return null;

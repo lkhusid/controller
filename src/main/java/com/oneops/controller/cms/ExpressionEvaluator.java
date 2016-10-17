@@ -31,11 +31,9 @@ import com.oneops.cms.cm.domain.CmsCIAttribute;
 import com.oneops.cms.cm.ops.domain.CmsActionOrder;
 import com.oneops.cms.dj.domain.CmsWorkOrder;
 import com.oneops.cms.domain.CmsWorkOrderBase;
-import com.oneops.cms.exceptions.DJException;
 import com.oneops.cms.simple.domain.CmsCISimple;
 import com.oneops.cms.simple.domain.CmsRfcCISimple;
 import com.oneops.cms.util.CmsConstants;
-import com.oneops.cms.util.CmsError;
 import com.oneops.cms.util.CmsUtil;
 
 /**
@@ -70,19 +68,18 @@ public class ExpressionEvaluator {
 				Expression expr = exprParser.parseExpression(filter);
 				EvaluationContext context = getEvaluationContext(wo);
 				//parse the filter expression and check if it matches this ci/rfc
-				boolean match = expr.getValue(context, Boolean.class);
+				Boolean match = expr.getValue(context, Boolean.class);
 				if (logger.isDebugEnabled()) {
 					logger.debug("Expression " + filter + " provided by compliance ci " + complianceCi.getCiId() + " not matched for ci " + getCiName(wo));	
 				}
 				
 				return match;
 			}
-			return false;
 		} catch (ParseException | EvaluationException e) {
 			String error = "Error in evaluating expression " + filter +" provided by compliance ci " + complianceCi.getCiId() + ", target ci :" + getCiName(wo); 
 			logger.error(error, e);
-			throw new DJException(CmsError.DJ_EXPR_EVAL_ERROR, error);
 		}
+		return false;
 	}
 	
 	private EvaluationContext getEvaluationContext(CmsWorkOrderBase woBase) {
