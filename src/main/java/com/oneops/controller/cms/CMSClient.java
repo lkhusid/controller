@@ -19,10 +19,12 @@ package com.oneops.controller.cms;
 import java.security.GeneralSecurityException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Set;
 
 import org.activiti.engine.delegate.DelegateExecution;
 import org.apache.log4j.Logger;
@@ -80,8 +82,8 @@ public class CMSClient {
     public static final String INPROGRESS = "inprogress";
     public static final String COMPLETE = "complete";
     public static final String FAILED = "failed";
+    public static final String PAUSED = "paused";
     private static final String DPMT = "dpmt";
-    protected static final String CLOUDSERVICEPREFIX = "cloud.service";
 
     private RestTemplate restTemplate;
     @SuppressWarnings("unused")
@@ -188,7 +190,7 @@ public class CMSClient {
 
         	long failedWos = djManager.getDeploymentRecordCount(dpmt.getDeploymentId(), "failed", execOrder);
         	
-            if (failedWos > 0) {
+            if (failedWos > 0 && !dpmt.getContinueOnFailure()) {
                 logger.error("Previous step has failed work orders, the deployment should be in failed state");
                 String descr = dpmt.getDescription();
                 if (descr == null) {
@@ -345,8 +347,8 @@ public class CMSClient {
             dpmtRec.setDeploymentId(wo.getDeploymentId());
             dpmtRec.setDpmtRecordState(newState);
             dpmtRec.setComments(wo.getComments());
-            if (newState.equalsIgnoreCase(FAILED)) {
-                CmsDeployment dpmt = (CmsDeployment) exec.getVariable(DPMT);
+            CmsDeployment dpmt = (CmsDeployment) exec.getVariable(DPMT);
+            if (newState.equalsIgnoreCase(FAILED) && dpmt!=null && !dpmt.getContinueOnFailure()) {
                 dpmt.setDeploymentState(FAILED);
                 if (exec.getVariable("error-message") != null) {
                     dpmtRec.setComments(exec.getVariable("error-message").toString());
@@ -436,8 +438,23 @@ public class CMSClient {
      * @param exec the exec
      */
     public void incExecOrder(DelegateExecution exec) {
-        Integer execOrder = (Integer) exec.getVariable(EXEC_ORDER) + 1;
-        exec.setVariable(EXEC_ORDER, execOrder);
+        Integer newExecOrder = (Integer) exec.getVariable(EXEC_ORDER) + 1;
+        if (exec.hasVariable(DPMT)) {
+            CmsDeployment dpmt = (CmsDeployment) exec.getVariable(DPMT);
+            Set<Integer> autoPauseExecOrders = dpmt.getAutoPauseExecOrders();
+            if (autoPauseExecOrders != null && autoPauseExecOrders.contains(newExecOrder)) {
+                logger.info("pausing deployment " + dpmt.getDeploymentId() + " before step " + newExecOrder);
+                dpmt.setDeploymentState(PAUSED);
+                dpmt.setComments("deployment paused at step " + newExecOrder + " on " + new Date());
+                try {
+                    djManager.updateDeployment(dpmt);
+                } catch (CmsBaseException e) {
+                    logger.error("CmsBaseException in incExecOrder", e);
+                    throw e;
+                }
+            }
+        }
+        exec.setVariable(EXEC_ORDER, newExecOrder);
     }
 
     /**
@@ -501,7 +518,7 @@ public class CMSClient {
      * Update action order state.
      *
      * @param exec     the exec
-     * @param ao       the ao
+     * @param aos       the aos
      * @param newState the new state
      */
     public void updateActionOrderState(DelegateExecution exec, CmsActionOrderSimple aos, String newState) {
